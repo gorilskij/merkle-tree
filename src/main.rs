@@ -164,6 +164,19 @@ impl<T: Hash> Proof<'_, T> {
     }
 }
 
+#[test]
+fn test_proof() {
+    let values = ["a", "b", "c", "d", "e", "f", "g", "h"];
+    for len in 1..values.len() {
+        let tree = Tree::new(&values[..len]);
+        let (root, _) = tree.commit();
+        for i in 0..len {
+            let proof = tree.prove(i);
+            assert!(proof.verify(root));
+        }
+    }
+}
+
 fn main() {
     let values = [
         "hello world",
