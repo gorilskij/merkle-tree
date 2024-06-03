@@ -1,20 +1,29 @@
+#![feature(iter_collect_into)]
+#![feature(new_uninit)]
+
 use itertools::Itertools;
 use rand::prelude::*;
 use std::fmt::Debug;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::process::abort;
 
 type HashValue = u64;
+
+#[derive(Debug)]
+struct NodeLinks<T: Hash> {
+    left: Node<T>,
+    right: Node<T>,
+}
 
 #[derive(Debug)]
 enum Node<T: Hash> {
     Node {
         hash: HashValue,
-        left: Box<Node<T>>,
-        right: Box<Node<T>>,
+        links: Box<NodeLinks<T>>,
     },
     Leaf {
         hash: HashValue,
-        value: T,
+        value: Box<T>,
     },
     PaddingLeaf {
         // randomly assigned
@@ -68,14 +77,17 @@ fn bit(num: usize, i: usize) -> bool {
 }
 
 impl<T: Hash> Tree<T> {
-    fn new<I: IntoIterator<Item = T>>(items: I) -> Self {
+    fn new<I: IntoIterator<Item = T>>(items: I) -> Self
+    where
+        <I as IntoIterator>::IntoIter: ExactSizeIterator,
+    {
         let rng = &mut thread_rng();
 
         let mut nodes: Vec<_> = items
             .into_iter()
             .map(|x| Node::Leaf {
                 hash: hash_one(&x),
-                value: x,
+                value: Box::new(x),
             })
             .collect();
 
@@ -89,21 +101,15 @@ impl<T: Hash> Tree<T> {
                 .into_iter()
                 .chunks(2)
                 .into_iter()
-                .map(|mut chunk| match (chunk.next(), chunk.next()) {
-                    (Some(left), Some(right)) => Node::Node {
+                .map(|mut chunk| {
+                    let left = chunk.next().unwrap();
+                    let right = chunk
+                        .next()
+                        .unwrap_or_else(|| Node::PaddingLeaf { padding: rng.gen() });
+                    Node::Node {
                         hash: hash_two(&left.hash_value(), &right.hash_value()),
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    },
-                    (Some(left), None) => {
-                        let right = Node::PaddingLeaf { padding: rng.gen() };
-                        Node::Node {
-                            hash: hash_two(&left.hash_value(), &right.hash_value()),
-                            left: Box::new(left),
-                            right: Box::new(right),
-                        }
+                        links: Box::new(NodeLinks { left, right }),
                     }
-                    _ => unreachable!(),
                 })
                 .collect();
         }
@@ -132,16 +138,16 @@ impl<T: Hash> Tree<T> {
 
         let mut node = &self.head;
         while h > 0 {
-            let Node::Node { left, right, .. } = node else {
+            let Node::Node { links, .. } = node else {
                 unreachable!();
             };
             h -= 1;
             if !bit(i, h) {
-                proof.push(ProofComponent::Right(right.hash_value()));
-                node = left;
+                proof.push(ProofComponent::Right(links.right.hash_value()));
+                node = &links.left;
             } else {
-                proof.push(ProofComponent::Left(left.hash_value()));
-                node = right;
+                proof.push(ProofComponent::Left(links.left.hash_value()));
+                node = &links.right;
             }
         }
         let Node::Leaf { value, .. } = node else {
@@ -178,17 +184,23 @@ fn test_proof() {
 }
 
 fn main() {
-    let values = [
-        "hello world",
-        "this is a sentence",
-        "third sentence",
-        "this is interesting",
-        "this will need to be padded",
-    ];
+    use std::time::Instant;
 
-    let tree = Tree::new(values);
-    println!("{:?}", tree);
+    let start = Instant::now();
+    let tree = Tree::new(0..100_000_000);
+    println!("tree creation: {:?}", start.elapsed());
+    println!("height: {:?}", tree.height);
+
     let (root, _) = tree.commit();
-    let proof = tree.prove(4);
+
+    let start = Instant::now();
+    let proof = tree.prove(50_000_000);
+    println!("proof creation: {:?}", start.elapsed());
+    println!("proof len: {}", proof.1.len());
+
+    let start = Instant::now();
     println!("{:?}", proof.verify(root));
+    println!("proof verification: {:?}", start.elapsed());
+
+    abort()
 }
