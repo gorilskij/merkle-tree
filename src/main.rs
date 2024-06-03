@@ -1,11 +1,12 @@
 #![feature(iter_collect_into)]
 #![feature(new_uninit)]
 
-use itertools::Itertools;
 use rand::prelude::*;
 use std::fmt::Debug;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::mem::MaybeUninit;
 use std::process::abort;
+use std::ptr;
 
 type HashValue = u64;
 
@@ -83,38 +84,52 @@ impl<T: Hash> Tree<T> {
     {
         let rng = &mut thread_rng();
 
-        let mut nodes: Vec<_> = items
-            .into_iter()
-            .map(|x| Node::Leaf {
+        let items = items.into_iter();
+        let mut nodes = Box::new_uninit_slice(items.len());
+
+        // fill the entire slice
+        items.enumerate().for_each(|(i, x)| {
+            nodes[i].write(Node::Leaf {
                 hash: hash_one(&x),
                 value: Box::new(x),
-            })
-            .collect();
+            });
+        });
 
         let len = nodes.len();
         assert!(len > 0);
 
+        // number of actually initialized elements in `nodes`
+        let mut nodes_len = nodes.len();
         let mut height = 1;
-        while nodes.len() > 1 {
+        while nodes_len > 1 {
             height += 1;
-            nodes = nodes
-                .into_iter()
-                .chunks(2)
-                .into_iter()
-                .map(|mut chunk| {
-                    let left = chunk.next().unwrap();
-                    let right = chunk
-                        .next()
-                        .unwrap_or_else(|| Node::PaddingLeaf { padding: rng.gen() });
-                    Node::Node {
-                        hash: hash_two(&left.hash_value(), &right.hash_value()),
-                        links: Box::new(NodeLinks { left, right }),
-                    }
-                })
-                .collect();
+            (0..nodes_len).step_by(2).for_each(|i| {
+                let left = unsafe {
+                    let mut left = MaybeUninit::uninit();
+                    ptr::copy_nonoverlapping(&nodes[i], &mut left, 1);
+                    left.assume_init()
+                };
+                let right = nodes
+                    .get(i + 1)
+                    .map(|m| unsafe {
+                        let mut right = MaybeUninit::uninit();
+                        ptr::copy_nonoverlapping(m, &mut right, 1);
+                        right.assume_init()
+                    })
+                    .unwrap_or_else(|| Node::PaddingLeaf { padding: rng.gen() });
+                nodes[i / 2].write(Node::Node {
+                    hash: hash_two(&left.hash_value(), &right.hash_value()),
+                    links: Box::new(NodeLinks { left, right }),
+                });
+            });
+            nodes_len = (nodes_len + 1) / 2;
         }
         Tree {
-            head: nodes.pop().unwrap(),
+            head: unsafe {
+                let mut head = MaybeUninit::uninit();
+                ptr::copy_nonoverlapping(&nodes[0], &mut head, 1);
+                head.assume_init()
+            },
             len,
             height,
         }
